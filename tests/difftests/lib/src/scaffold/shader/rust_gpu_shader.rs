@@ -66,7 +66,7 @@ impl SpirvShader for RustComputeShader {
             }
         };
 
-        Ok((shader_bytes, entry_point))
+        Ok((shader_bytes, entry_point.name))
     }
 }
 

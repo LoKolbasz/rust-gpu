@@ -75,7 +75,8 @@ pub enum LinkResult {
         /// (through `sanitize_filename`, replacing invalid chars with `-`),
         /// but it's used as the map key because it *has to* be unique, even if
         /// lossy sanitization could have erased distinctions between entry names.
-        file_stem_to_entry_name_and_module: BTreeMap<OsString, (String, Module)>,
+        file_stem_to_entry_name_and_module:
+            BTreeMap<OsString, (rustc_codegen_spirv_types::EntryPoint, Module)>,
     },
 }
 
@@ -666,10 +667,11 @@ pub fn link(
             let mut module = output.clone();
             module.entry_points.clear();
             module.entry_points.push(entry.clone());
-            let entry_name = entry.operands[2].unwrap_literal_string().to_string();
+            let entry_point: rustc_codegen_spirv_types::EntryPoint =
+                entry.operands.clone().try_into().unwrap();
             let mut file_stem = OsString::from(
                 sanitize_filename::sanitize_with_options(
-                    &entry_name,
+                    &entry_point.name,
                     sanitize_filename::Options {
                         replacement: "-",
                         ..Default::default()
@@ -684,7 +686,7 @@ pub fn link(
                 use std::collections::btree_map::Entry;
                 match file_stem_to_entry_name_and_module.entry(file_stem) {
                     Entry::Vacant(entry) => {
-                        entry.insert((entry_name, module));
+                        entry.insert((entry_point, module));
                         break;
                     }
                     // FIXME(eddyb) false positive: `file_stem` was moved out of,

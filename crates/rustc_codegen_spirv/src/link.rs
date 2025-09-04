@@ -7,7 +7,7 @@ use ar::{Archive, GnuBuilder, Header};
 use rspirv::binary::Assemble;
 use rspirv::dr::Module;
 use rustc_ast::CRATE_NODE_ID;
-use rustc_codegen_spirv_types::{CompileResult, ModuleResult};
+use rustc_codegen_spirv_types::{CompileResult, EntryPoint, ModuleResult};
 use rustc_codegen_ssa::back::lto::{LtoModuleCodegen, SerializedModule, ThinModule, ThinShared};
 use rustc_codegen_ssa::back::write::CodegenContext;
 use rustc_codegen_ssa::{CodegenResults, NativeLib};
@@ -208,9 +208,9 @@ fn link_exe(
                 std::fs::create_dir_all(&out_dir).unwrap();
             }
 
-            let entry_name_to_file_path: BTreeMap<_, _> = file_stem_to_entry_name_and_module
+            let entry_to_file_path: BTreeMap<_, _> = file_stem_to_entry_name_and_module
                 .into_iter()
-                .map(|(file_stem, (entry_name, module))| {
+                .map(|(file_stem, (entry, module))| {
                     let mut out_file_name = file_stem;
                     out_file_name.push(".spv");
                     let out_file_path = out_dir.join(out_file_name);
@@ -221,12 +221,12 @@ fn link_exe(
                         &out_file_path,
                         Some(disambiguated_crate_name_for_dumps),
                     );
-                    (entry_name, out_file_path)
+                    (entry, out_file_path)
                 })
                 .collect();
             CompileResult {
-                entry_points: entry_name_to_file_path.keys().cloned().collect(),
-                module: ModuleResult::MultiModule(entry_name_to_file_path),
+                entry_points: entry_to_file_path.keys().cloned().collect(),
+                module: ModuleResult::MultiModule(entry_to_file_path),
             }
         }
     };
@@ -237,12 +237,59 @@ fn link_exe(
         .unwrap();
 }
 
-fn entry_points(module: &rspirv::dr::Module) -> Vec<String> {
+//macro_rules! gen_operand {
+//    (enum $enum_name: ident { $($variant: ident = $id: literal  $required_capability: literal $(doc = $doc_comment: literal)* $(reserved $reserved: expr)?),* }) => {
+//        enum $enum_name {
+//            $(
+//            #[doc = "Enabling Capabilities"]
+//            #[doc = $required_capability]
+//            $(#[doc = $doc_comment])*
+//            $(#[doc = "[Reserved](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#Unified)"] ${ignore($reserved)})?
+//            $variant,
+//        )*
+//
+//        }
+//    }
+//}
+//
+//gen_operand!(
+//    enum ExecutionModel {
+//        Vertex = 0 "Shader" doc = "Vertex shading stage.",
+//        TesselationControl = 1 "Tesselation" doc = "Tessellation control (or hull) shading stage.",
+//        TesselationEvaluation = 2 "Tesselation" doc = "Tessellation evaluation (or domain) shading stage.",
+//        Geometry = 3 "Geometry" doc = "Geometry shading stage.",
+//        Fragment = 4 "Shader" doc = "Fragment shading stage.",
+//        GLCompute = 5 "Shader" doc = "Graphical compute shading stage.",
+//        Kernel = 6 "Kernel" doc = "Compute kernel.",
+//        TaskNV = 5267 "`MeshShadingNV`" reserved _,
+//        MeshNV = 5268 "`MeshShadingNV`" reserved _,
+//        RayGEnerationKHR = 5313 "`RayTracingNV`, `RayTracingKHR`" doc = "`RayGEnerationNV`" reserved _,
+//        IntersectionKHR = 5314 "`RayTracingNV`, `RayTracingKHR`" doc = "`IntersectionNV`" reserved _,
+//        AnyHitKhr = 5315 "`RayTracingNV``RayTracingKHR`HR" doc = "`AnyHitNV`" reserved _,
+//        ClosestHitKHR = 5316 "`RayTracingNV``RayTracingKHR`HR" doc = "ClosestHitNV" reserved _,
+//        MissKHR = 5317 "`RayTracingNV``RayTracingKHR`HR" doc = "`MissNV`" reserved _,
+//        CallableKHR = 5318 "`RayTracingNV``RayTracingKHR`HR" doc = "`CallableNV`" reserved _,
+//        TaskEXT = 5364 "`MeshShadingEXT`" reserved _,
+//        MeshEXT = 5365 "`MeshShadingEXT`" reserved _
+//    }
+//);
+
+//struct ExecutionModel(rspirv::sr::autogen_instructions)
+
+fn entry_points(module: &rspirv::dr::Module) -> Vec<EntryPoint> {
     module
         .entry_points
         .iter()
         .filter(|inst| inst.class.opcode == rspirv::spirv::Op::EntryPoint)
-        .map(|inst| inst.operands[2].unwrap_literal_string().to_string())
+        .map(|inst| EntryPoint {
+            execution_model: inst.operands[0].unwrap_execution_model(),
+            entry_point: inst.operands[1].unwrap_literal_bit32(),
+            name: inst.operands[2].unwrap_literal_string().to_string(),
+            interface: inst.operands[3..]
+                .iter()
+                .map(|op| op.unwrap_literal_bit32())
+                .collect::<Vec<_>>(),
+        })
         .collect()
 }
 

@@ -170,7 +170,7 @@ fn maybe_watch(
                     }
                     spirv_builder::ModuleResult::MultiModule(modules) => modules
                         .into_iter()
-                        .map(|(name, path)| (Some(name), load_spv_module(path)))
+                        .map(|(ep, path)| (Some(ep.name), load_spv_module(path)))
                         .collect(),
                 },
             }

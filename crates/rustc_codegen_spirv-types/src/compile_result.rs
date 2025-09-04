@@ -1,4 +1,6 @@
+use rspirv::dr::Operand;
 use serde::{Deserialize, Serialize};
+use spirv::Word;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -7,7 +9,7 @@ use std::path::{Path, PathBuf};
 #[serde(untagged)]
 pub enum ModuleResult {
     SingleModule(PathBuf),
-    MultiModule(BTreeMap<String, PathBuf>),
+    MultiModule(BTreeMap<EntryPoint, PathBuf>),
 }
 
 impl ModuleResult {
@@ -20,7 +22,7 @@ impl ModuleResult {
         }
     }
 
-    pub fn unwrap_multi(&self) -> &BTreeMap<String, PathBuf> {
+    pub fn unwrap_multi(&self) -> &BTreeMap<EntryPoint, PathBuf> {
         match self {
             ModuleResult::MultiModule(result) => result,
             ModuleResult::SingleModule(_) => {
@@ -30,15 +32,77 @@ impl ModuleResult {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
+pub struct EntryPoint {
+    pub execution_model: spirv::ExecutionModel,
+    pub entry_point: spirv::Word,
+    pub name: String,
+    pub interface: Vec<spirv::Word>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum EntryPointConversionError {
+    #[error("Operand was not execution model.")]
+    MissingExecutionModel,
+    #[error("Entry point id was not a 32bit literal.")]
+    MissingEntryPoint,
+    #[error("Entry point name was not a string literal.")]
+    InvalidName,
+    #[error("Interface contains invelid 32bit literal.")]
+    InvalidInterface,
+    #[error("Not enough operands.")]
+    NotEnoughOperands,
+}
+
+impl TryFrom<Vec<Operand>> for EntryPoint {
+    type Error = EntryPointConversionError;
+
+    fn try_from(value: Vec<Operand>) -> Result<Self, Self::Error> {
+        let mut iter = value.into_iter();
+        Ok(Self {
+            execution_model: match iter.next() {
+                Some(op) => match op {
+                    Operand::ExecutionModel(model) => model,
+                    _ => return Err(EntryPointConversionError::MissingExecutionModel),
+                },
+                None => return Err(EntryPointConversionError::NotEnoughOperands),
+            },
+            entry_point: match iter.next() {
+                Some(op) => match op {
+                    Operand::LiteralBit32(word) => word,
+                    _ => return Err(EntryPointConversionError::MissingEntryPoint),
+                },
+                None => return Err(EntryPointConversionError::NotEnoughOperands),
+            },
+            name: match iter.next() {
+                Some(op) => match op {
+                    Operand::LiteralString(string) => string,
+                    _ => return Err(EntryPointConversionError::InvalidName),
+                },
+                None => return Err(EntryPointConversionError::NotEnoughOperands),
+            },
+            interface: {
+                let res: std::result::Result<Vec<Word>, _> = iter
+                    .map(|op| match op {
+                        Operand::LiteralBit32(word) => Ok(word),
+                        _ => Err(EntryPointConversionError::InvalidInterface),
+                    })
+                    .collect();
+                res?
+            },
+        })
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompileResult {
-    pub entry_points: Vec<String>,
+    pub entry_points: Vec<EntryPoint>,
     pub module: ModuleResult,
 }
 
 impl CompileResult {
     pub fn codegen_entry_point_strings(&self) -> String {
-        let trie = Trie::create_from(self.entry_points.iter().map(|x| x as &str));
+        let trie = Trie::create_from(self.entry_points.iter().map(|x| &x.name as &str));
         let mut builder = String::new();
         trie.emit(&mut builder, String::new(), 0);
         builder

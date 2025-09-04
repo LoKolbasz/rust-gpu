@@ -266,8 +266,8 @@ pub fn compile_shaders() -> Vec<SpvFile> {
     .module
     .unwrap_multi()
     .iter()
-    .map(|(name, path)| SpvFile {
-        name: format!("sky_shader::{name}"),
+    .map(|(ep, path)| SpvFile {
+        name: format!("sky_shader::{}", ep.name),
         data: read_spv(&mut File::open(path).unwrap()).unwrap(),
     })
     .collect()
