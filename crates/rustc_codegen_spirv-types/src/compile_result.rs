@@ -31,22 +31,15 @@ impl ModuleResult {
     }
 }
 
-pub enum EntryPointId {
-    LiteralBit32(spirv::Word),
-    IdRef(spirv::Word),
-}
-
-#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum EntryPointInterfaceOperand {
-    IdRef(spirv::Word),
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
 pub struct EntryPoint {
     pub execution_model: spirv::ExecutionModel,
+    // IdRef
     pub entry_point: spirv::Word,
+    // LiteralString
     pub name: String,
-    pub interface: Vec<EntryPointInterfaceOperand>,
+    // Vec<IdRef>
+    pub interface: Vec<spirv::Word>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -91,9 +84,9 @@ impl TryFrom<Vec<Operand>> for EntryPoint {
                 None => return Err(EntryPointConversionError::NotEnoughOperands(value)),
             },
             interface: {
-                let res: std::result::Result<Vec<EntryPointInterfaceOperand>, _> = iter
+                let res: std::result::Result<Vec<spirv::Word>, _> = iter
                     .map(|op| match op {
-                        Operand::IdRef(word) => Ok(EntryPointInterfaceOperand::IdRef(word)),
+                        Operand::IdRef(word) => Ok(word),
                         _ => Err(EntryPointConversionError::InvalidInterface(op)),
                     })
                     .collect();
