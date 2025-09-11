@@ -193,7 +193,7 @@ fn link_exe(
     );
     let compile_result = match link_result {
         linker::LinkResult::SingleModule(module) => {
-            let entry_points = entry_points(&module);
+            let entry_points = entry_points(*module.clone());
             post_link_single_module(sess, &cg_args, *module, &out_path_spv, None);
             CompileResult {
                 entry_points,
@@ -276,20 +276,12 @@ fn link_exe(
 
 //struct ExecutionModel(rspirv::sr::autogen_instructions)
 
-fn entry_points(module: &rspirv::dr::Module) -> Vec<EntryPoint> {
+fn entry_points(module: rspirv::dr::Module) -> Vec<EntryPoint> {
     module
         .entry_points
-        .iter()
+        .into_iter()
         .filter(|inst| inst.class.opcode == rspirv::spirv::Op::EntryPoint)
-        .map(|inst| EntryPoint {
-            execution_model: inst.operands[0].unwrap_execution_model(),
-            entry_point: inst.operands[1].unwrap_literal_bit32(),
-            name: inst.operands[2].unwrap_literal_string().to_string(),
-            interface: inst.operands[3..]
-                .iter()
-                .map(|op| op.unwrap_literal_bit32())
-                .collect::<Vec<_>>(),
-        })
+        .map(|inst| EntryPoint::try_from(inst.operands).unwrap())
         .collect()
 }
 

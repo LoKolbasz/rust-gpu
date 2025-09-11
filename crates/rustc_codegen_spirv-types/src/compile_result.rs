@@ -1,6 +1,5 @@
 use rspirv::dr::Operand;
 use serde::{Deserialize, Serialize};
-use spirv::Word;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -32,60 +31,70 @@ impl ModuleResult {
     }
 }
 
+pub enum EntryPointId {
+    LiteralBit32(spirv::Word),
+    IdRef(spirv::Word),
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum EntryPointInterfaceOperand {
+    IdRef(spirv::Word),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, PartialOrd, Ord, Hash)]
 pub struct EntryPoint {
     pub execution_model: spirv::ExecutionModel,
     pub entry_point: spirv::Word,
     pub name: String,
-    pub interface: Vec<spirv::Word>,
+    pub interface: Vec<EntryPointInterfaceOperand>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum EntryPointConversionError {
-    #[error("Operand was not execution model.")]
-    MissingExecutionModel,
-    #[error("Entry point id was not a 32bit literal.")]
-    MissingEntryPoint,
-    #[error("Entry point name was not a string literal.")]
-    InvalidName,
-    #[error("Interface contains invelid 32bit literal.")]
-    InvalidInterface,
-    #[error("Not enough operands.")]
-    NotEnoughOperands,
+    #[error("Operand was not execution model.\nExpected: ExecutionModel. Found: {0}")]
+    MissingExecutionModel(Operand),
+    #[error("Entry point id was not a 32bit literal.\nExpected: IdRef. Found: {0}")]
+    MissingEntryPoint(Operand),
+    #[error("Entry point name was not a string literal.\nFound: {0}")]
+    InvalidName(Operand),
+    #[error("Interface contains invelid 32bit literal.\nFound: {0}")]
+    InvalidInterface(Operand),
+    #[error("Not enough operands.\nOperands: {}", 0.to_string())]
+    NotEnoughOperands(Vec<Operand>),
 }
 
 impl TryFrom<Vec<Operand>> for EntryPoint {
     type Error = EntryPointConversionError;
 
     fn try_from(value: Vec<Operand>) -> Result<Self, Self::Error> {
-        let mut iter = value.into_iter();
+        let mut iter = value.iter().cloned();
         Ok(Self {
             execution_model: match iter.next() {
                 Some(op) => match op {
                     Operand::ExecutionModel(model) => model,
-                    _ => return Err(EntryPointConversionError::MissingExecutionModel),
+                    _ => return Err(EntryPointConversionError::MissingExecutionModel(op)),
                 },
-                None => return Err(EntryPointConversionError::NotEnoughOperands),
+                None => return Err(EntryPointConversionError::NotEnoughOperands(value)),
             },
             entry_point: match iter.next() {
                 Some(op) => match op {
-                    Operand::LiteralBit32(word) => word,
-                    _ => return Err(EntryPointConversionError::MissingEntryPoint),
+                    Operand::IdRef(word) => word,
+                    _ => return Err(EntryPointConversionError::MissingEntryPoint(op)),
                 },
-                None => return Err(EntryPointConversionError::NotEnoughOperands),
+                None => return Err(EntryPointConversionError::NotEnoughOperands(value)),
             },
             name: match iter.next() {
                 Some(op) => match op {
                     Operand::LiteralString(string) => string,
-                    _ => return Err(EntryPointConversionError::InvalidName),
+                    _ => return Err(EntryPointConversionError::InvalidName(op)),
                 },
-                None => return Err(EntryPointConversionError::NotEnoughOperands),
+                None => return Err(EntryPointConversionError::NotEnoughOperands(value)),
             },
             interface: {
-                let res: std::result::Result<Vec<Word>, _> = iter
+                let res: std::result::Result<Vec<EntryPointInterfaceOperand>, _> = iter
                     .map(|op| match op {
-                        Operand::LiteralBit32(word) => Ok(word),
-                        _ => Err(EntryPointConversionError::InvalidInterface),
+                        Operand::IdRef(word) => Ok(EntryPointInterfaceOperand::IdRef(word)),
+                        _ => Err(EntryPointConversionError::InvalidInterface(op)),
                     })
                     .collect();
                 res?
