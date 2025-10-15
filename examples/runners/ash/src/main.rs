@@ -80,23 +80,44 @@ use winit::{
 
 use std::{
     borrow::Cow,
-    collections::HashMap,
     ffi::{CStr, CString},
     fs::File,
     os::raw::c_char,
+    path::PathBuf,
     sync::mpsc::{TryRecvError, TrySendError, sync_channel},
     thread,
 };
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 use spirv_builder::{MetadataPrintout, SpirvBuilder};
 
 use shared::ShaderConstants;
 
+// This runner currently doesn't run the `compute` shader example.
+#[derive(Debug, PartialEq, Eq, Copy, Clone, ValueEnum)]
+pub enum RustGPUShader {
+    Simplest,
+    Sky,
+    Mouse,
+}
+
+impl RustGPUShader {
+    fn crate_name(&self) -> &'static str {
+        match self {
+            RustGPUShader::Simplest => "simplest-shader",
+            RustGPUShader::Sky => "sky-shader",
+            RustGPUShader::Mouse => "mouse-shader",
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command()]
 pub struct Options {
+    #[arg(short, long, default_value = "sky")]
+    shader: RustGPUShader,
+
     /// Use Vulkan debug layer (requires Vulkan SDK installed)
     #[arg(short, long)]
     debug_layer: bool,
@@ -115,7 +136,7 @@ pub fn main() {
     }
 
     let options = Options::parse();
-    let shaders = compile_shaders();
+    let (vert_data, frag_data) = compile_shaders(&options.shader);
 
     // runtime setup
     let event_loop = EventLoop::new().unwrap();
@@ -134,27 +155,13 @@ pub fn main() {
         .unwrap();
     let mut ctx = RenderBase::new(window, &options).into_ctx();
 
-    // Create shader module and pipelines
-    for SpvFile { name, data } in shaders {
-        ctx.insert_shader_module(name, &data);
-    }
-    ctx.build_pipelines(
-        vk::PipelineCache::null(),
-        vec![(
-            // HACK(eddyb) used to be `module: "sky_shader"` but we need `multimodule`
-            // for `debugPrintf` instrumentation to work (see `compile_shaders`).
-            VertexShaderEntryPoint {
-                module: "sky_shader::main_vs".into(),
-                entry_point: "main_vs".into(),
-            },
-            FragmentShaderEntryPoint {
-                module: "sky_shader::main_fs".into(),
-                entry_point: "main_fs".into(),
-            },
-        )],
-    );
+    // Insert shader modules.
+    ctx.update_shader_modules(&vert_data, &frag_data);
 
-    let (compiler_sender, compiler_receiver) = sync_channel(1);
+    // Create pipeline.
+    ctx.rebuild_pipeline(vk::PipelineCache::null());
+
+    let (compiler_sender, compiler_receiver) = sync_channel::<(Vec<u32>, Vec<u32>)>(1);
 
     // FIXME(eddyb) incomplete `winit` upgrade, follow the guides in:
     // https://github.com/rust-windowing/winit/releases/tag/v0.30.0
@@ -174,12 +181,10 @@ pub fn main() {
                             ctx.render();
                         }
                     }
-                    Ok(new_shaders) => {
-                        for SpvFile { name, data } in new_shaders {
-                            ctx.insert_shader_module(name, &data);
-                        }
+                    Ok((new_vert_data, new_frag_data)) => {
+                        ctx.update_shader_modules(&new_vert_data, &new_frag_data);
                         ctx.recompiling_shaders = false;
-                        ctx.rebuild_pipelines(vk::PipelineCache::null());
+                        ctx.rebuild_pipeline(vk::PipelineCache::null());
                     }
                     Err(TryRecvError::Disconnected) => {
                         panic!("compiler receiver disconnected unexpectedly");
@@ -203,29 +208,17 @@ pub fn main() {
                             let compiler_sender = compiler_sender.clone();
                             thread::spawn(move || {
                                 if let Err(TrySendError::Disconnected(_)) =
-                                    compiler_sender.try_send(compile_shaders())
+                                    compiler_sender.try_send(compile_shaders(&options.shader))
                                 {
                                     panic!("compiler sender disconnected unexpectedly");
                                 };
                             });
                         }
                     }
-                    _ => {}
-                },
-                WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            physical_key: winit::keyboard::PhysicalKey::Code(key_code),
-                            state: winit::event::ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } => match key_code {
-                    winit::keyboard::KeyCode::NumpadAdd
-                    | winit::keyboard::KeyCode::NumpadSubtract => {
+                    winit::keyboard::NamedKey::ArrowUp | winit::keyboard::NamedKey::ArrowDown => {
                         let factor =
                             &mut ctx.sky_fs_spec_id_0x5007_sun_intensity_extra_spec_const_factor;
-                        *factor = if key_code == winit::keyboard::KeyCode::NumpadAdd {
+                        *factor = if key == winit::keyboard::NamedKey::ArrowUp {
                             factor.saturating_add(1)
                         } else {
                             factor.saturating_sub(1)
@@ -233,7 +226,7 @@ pub fn main() {
 
                         // HACK(eddyb) to see any changes, re-specializing the
                         // shader module is needed (e.g. during pipeline rebuild).
-                        ctx.rebuild_pipelines(vk::PipelineCache::null());
+                        ctx.rebuild_pipeline(vk::PipelineCache::null());
                     }
                     _ => {}
                 },
@@ -248,35 +241,48 @@ pub fn main() {
         .unwrap();
 }
 
-pub fn compile_shaders() -> Vec<SpvFile> {
-    SpirvBuilder::new(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../shaders/sky-shader"),
-        "spirv-unknown-vulkan1.1",
-    )
-    .print_metadata(MetadataPrintout::None)
-    .shader_panic_strategy(spirv_builder::ShaderPanicStrategy::DebugPrintfThenExit {
-        print_inputs: true,
-        print_backtrace: true,
-    })
-    // HACK(eddyb) needed because of `debugPrintf` instrumentation limitations
-    // (see https://github.com/KhronosGroup/SPIRV-Tools/issues/4892).
-    .multimodule(true)
-    .build()
-    .unwrap()
-    .module
-    .unwrap_multi()
-    .iter()
-    .map(|(ep, path)| SpvFile {
-        name: format!("sky_shader::{}", ep.name),
-        data: read_spv(&mut File::open(path).unwrap()).unwrap(),
-    })
-    .collect()
-}
+pub fn compile_shaders(shader: &RustGPUShader) -> (Vec<u32>, Vec<u32>) {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let crate_path = [manifest_dir, "..", "..", "shaders", shader.crate_name()]
+        .iter()
+        .copied()
+        .collect::<PathBuf>();
 
-#[derive(Debug)]
-pub struct SpvFile {
-    pub name: String,
-    pub data: Vec<u32>,
+    let mut shaders = SpirvBuilder::new(crate_path, "spirv-unknown-vulkan1.1")
+        .print_metadata(MetadataPrintout::None)
+        .shader_panic_strategy(spirv_builder::ShaderPanicStrategy::DebugPrintfThenExit {
+            print_inputs: true,
+            print_backtrace: true,
+        })
+        // TODO: `multimodule` is no longer needed since
+        // https://github.com/KhronosGroup/SPIRV-Tools/issues/4892 was fixed, but removing it is
+        // non-trivial and hasn't been done yet.
+        .multimodule(true)
+        .build()
+        .unwrap()
+        .module
+        .unwrap_multi()
+        .iter()
+        .map(|(name, path)| {
+            (
+                name.clone(),
+                read_spv(&mut File::open(path).unwrap()).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    // We always have two shaders. And the fragment shader is always before the
+    // vertex shader in `shaders`. This is because `unwrap_multi` returns a
+    // `BTreeMap` sorted by shader name, and `main_fs` comes before `main_vs`,
+    // alphabetically. We still check the names to make sure they are in the
+    // order we expect. That way if the order ever changes we'll get an
+    // assertion failure here as opposed to a harder-to-debug failure later on.
+    assert_eq!(shaders.len(), 2);
+    assert_eq!(shaders[0].0.name, "main_fs");
+    assert_eq!(shaders[1].0.name, "main_vs");
+    let vert = shaders.pop().unwrap().1;
+    let frag = shaders.pop().unwrap().1;
+    (vert, frag)
 }
 
 pub struct RenderBase {
@@ -689,14 +695,15 @@ pub struct RenderCtx {
     pub commands: RenderCommandPool,
     pub viewports: Box<[vk::Viewport]>,
     pub scissors: Box<[vk::Rect2D]>,
-    pub pipelines: Vec<Pipeline>,
-    pub shader_modules: HashMap<String, vk::ShaderModule>,
-    pub shader_set: Vec<(VertexShaderEntryPoint, FragmentShaderEntryPoint)>,
+    pub pipeline: Option<Pipeline>,
+    pub vert_module: Option<vk::ShaderModule>,
+    pub frag_module: Option<vk::ShaderModule>,
 
     pub rendering_paused: bool,
     pub recompiling_shaders: bool,
     pub start: std::time::Instant,
 
+    // Only used for sky-shader.
     // NOTE(eddyb) this acts like an integration test for specialization constants.
     pub sky_fs_spec_id_0x5007_sun_intensity_extra_spec_const_factor: u32,
 }
@@ -738,9 +745,9 @@ impl RenderCtx {
             framebuffers,
             viewports,
             scissors,
-            pipelines: Vec::new(),
-            shader_modules: HashMap::new(),
-            shader_set: Vec::new(),
+            pipeline: None,
+            vert_module: None,
+            frag_module: None,
             rendering_paused: false,
             recompiling_shaders: false,
             start: std::time::Instant::now(),
@@ -766,7 +773,7 @@ impl RenderCtx {
         }
     }
 
-    pub fn rebuild_pipelines(&mut self, pipeline_cache: vk::PipelineCache) {
+    pub fn rebuild_pipeline(&mut self, pipeline_cache: vk::PipelineCache) {
         // NOTE(eddyb) this acts like an integration test for specialization constants.
         let spec_const_entries = [vk::SpecializationMapEntry::default()
             .constant_id(0x5007)
@@ -778,83 +785,66 @@ impl RenderCtx {
             .map_entries(&spec_const_entries)
             .data(&spec_const_data);
 
-        self.cleanup_pipelines();
+        self.cleanup_pipeline();
         let pipeline_layout = self.create_pipeline_layout();
         let viewport = vk::PipelineViewportStateCreateInfo::default()
             .scissor_count(1)
             .viewport_count(1);
-        let modules_names = self
-            .shader_set
-            .iter()
-            .map(|(vert, frag)| {
-                let vert_module = *self.shader_modules.get(&vert.module).unwrap();
-                let vert_name = CString::new(vert.entry_point.clone()).unwrap();
-                let frag_module = *self.shader_modules.get(&frag.module).unwrap();
-                let frag_name = CString::new(frag.entry_point.clone()).unwrap();
-                ((frag_module, frag_name), (vert_module, vert_name))
-            })
-            .collect::<Vec<_>>();
-        let descs = modules_names
-            .iter()
-            .map(|((frag_module, frag_name), (vert_module, vert_name))| {
-                PipelineDescriptor::new(Box::new([
-                    vk::PipelineShaderStageCreateInfo {
-                        module: *vert_module,
-                        p_name: (*vert_name).as_ptr(),
-                        stage: vk::ShaderStageFlags::VERTEX,
-                        ..Default::default()
-                    },
-                    vk::PipelineShaderStageCreateInfo {
-                        s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-                        module: *frag_module,
-                        p_name: (*frag_name).as_ptr(),
-                        stage: vk::ShaderStageFlags::FRAGMENT,
-                        p_specialization_info: &specialization_info,
-                        ..Default::default()
-                    },
-                ]))
-            })
-            .collect::<Vec<_>>();
-        let descs_indirect_parts = descs
-            .iter()
-            .map(|desc| desc.indirect_parts())
-            .collect::<Vec<_>>();
-        let pipeline_info = descs
-            .iter()
-            .zip(&descs_indirect_parts)
-            .map(|(desc, desc_indirect_parts)| {
-                vk::GraphicsPipelineCreateInfo::default()
-                    .stages(&desc.shader_stages)
-                    .vertex_input_state(&desc.vertex_input)
-                    .input_assembly_state(&desc.input_assembly)
-                    .rasterization_state(&desc.rasterization)
-                    .multisample_state(&desc.multisample)
-                    .depth_stencil_state(&desc.depth_stencil)
-                    .color_blend_state(&desc_indirect_parts.color_blend)
-                    .dynamic_state(&desc_indirect_parts.dynamic_state_info)
-                    .viewport_state(&viewport)
-                    .layout(pipeline_layout)
-                    .render_pass(self.render_pass)
-            })
-            .collect::<Vec<_>>();
-        self.pipelines = unsafe {
+
+        let vs_entry_point = "main_vs";
+        let fs_entry_point = "main_fs";
+        let vert_module = self.vert_module.as_ref().unwrap();
+        let frag_module = self.frag_module.as_ref().unwrap();
+        let vert_name = CString::new(vs_entry_point).unwrap();
+        let frag_name = CString::new(fs_entry_point).unwrap();
+        let desc = PipelineDescriptor::new(Box::new([
+            vk::PipelineShaderStageCreateInfo {
+                module: *vert_module,
+                p_name: (*vert_name).as_ptr(),
+                stage: vk::ShaderStageFlags::VERTEX,
+                ..Default::default()
+            },
+            vk::PipelineShaderStageCreateInfo {
+                s_type: vk::StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
+                module: *frag_module,
+                p_name: (*frag_name).as_ptr(),
+                stage: vk::ShaderStageFlags::FRAGMENT,
+                p_specialization_info: &specialization_info,
+                ..Default::default()
+            },
+        ]));
+        let desc_indirect_parts = desc.indirect_parts();
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&desc.shader_stages)
+            .vertex_input_state(&desc.vertex_input)
+            .input_assembly_state(&desc.input_assembly)
+            .rasterization_state(&desc.rasterization)
+            .multisample_state(&desc.multisample)
+            .depth_stencil_state(&desc.depth_stencil)
+            .color_blend_state(&desc_indirect_parts.color_blend)
+            .dynamic_state(&desc_indirect_parts.dynamic_state_info)
+            .viewport_state(&viewport)
+            .layout(pipeline_layout)
+            .render_pass(self.render_pass);
+
+        let mut pipelines = unsafe {
             self.base
                 .device
-                .create_graphics_pipelines(pipeline_cache, &pipeline_info, None)
+                .create_graphics_pipelines(pipeline_cache, &[pipeline_info], None)
                 .expect("Unable to create graphics pipeline")
-        }
-        .into_iter()
-        .map(|pipeline| Pipeline {
+        };
+        // A single `pipeline_info` results in a single pipeline.
+        assert_eq!(pipelines.len(), 1);
+        self.pipeline = pipelines.pop().map(|pipeline| Pipeline {
             pipeline,
             pipeline_layout,
-        })
-        .collect();
+        });
     }
 
-    pub fn cleanup_pipelines(&mut self) {
+    pub fn cleanup_pipeline(&mut self) {
         unsafe {
             self.base.device.device_wait_idle().unwrap();
-            for pipeline in self.pipelines.drain(..) {
+            if let Some(pipeline) = self.pipeline.take() {
                 self.base.device.destroy_pipeline(pipeline.pipeline, None);
                 self.base
                     .device
@@ -863,31 +853,35 @@ impl RenderCtx {
         }
     }
 
-    pub fn build_pipelines(
-        &mut self,
-        pipeline_cache: vk::PipelineCache,
-        shader_set: Vec<(VertexShaderEntryPoint, FragmentShaderEntryPoint)>,
-    ) {
-        self.shader_set = shader_set;
-        self.rebuild_pipelines(pipeline_cache);
-    }
-
-    /// Add a shader module to the hash map of shader modules.  returns a handle to the module, and the
-    /// old shader module if there was one with the same name already.  Does not rebuild pipelines
-    /// that may be using the shader module, nor does it invalidate them.
-    pub fn insert_shader_module(&mut self, name: String, spirv: &[u32]) {
-        let shader_info = vk::ShaderModuleCreateInfo::default().code(spirv);
+    /// Update the vertex and fragment shader modules. Does not rebuild
+    /// pipelines that may be using the shader module, nor does it invalidate
+    /// them.
+    pub fn update_shader_modules(&mut self, vert_data: &[u32], frag_data: &[u32]) {
+        let shader_info = vk::ShaderModuleCreateInfo::default().code(vert_data);
         let shader_module = unsafe {
             self.base
                 .device
                 .create_shader_module(&shader_info, None)
-                .expect("Shader module error")
+                .expect("Vertex shader module error")
         };
-        if let Some(old_module) = self.shader_modules.insert(name, shader_module) {
+        if let Some(old_module) = self.vert_module.replace(shader_module) {
             unsafe {
                 self.base.device.destroy_shader_module(old_module, None);
             }
+        }
+
+        let shader_info = vk::ShaderModuleCreateInfo::default().code(frag_data);
+        let shader_module = unsafe {
+            self.base
+                .device
+                .create_shader_module(&shader_info, None)
+                .expect("Fragment shader module error")
         };
+        if let Some(old_module) = self.frag_module.replace(shader_module) {
+            unsafe {
+                self.base.device.destroy_shader_module(old_module, None);
+            }
+        }
     }
 
     /// Destroys the swapchain, as well as the renderpass and frame and command buffers
@@ -963,15 +957,11 @@ impl RenderCtx {
         let framebuffer = self.framebuffers[present_index as usize];
         let clear_values = [vk::ClearValue {
             color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 1.0, 0.0],
+                float32: [0.0, 1.0, 0.0, 0.0],
             },
         }];
 
-        // There should only be one pipeline because compile_shaders only loads the last spirv
-        // file it produced.
-        for pipeline in self.pipelines.iter() {
-            self.draw(pipeline, framebuffer, &clear_values);
-        }
+        self.draw(self.pipeline.as_ref().unwrap(), framebuffer, &clear_values);
 
         let wait_semaphors = [self.sync.rendering_complete_semaphore];
         let swapchains = [self.swapchain];
@@ -1135,14 +1125,17 @@ impl Drop for RenderCtx {
                 .device
                 .free_command_buffers(self.commands.pool, &[self.commands.draw_command_buffer]);
             self.base.device.destroy_render_pass(self.render_pass, None);
-            self.cleanup_pipelines();
+            self.cleanup_pipeline();
             self.cleanup_swapchain();
             self.base
                 .device
                 .destroy_command_pool(self.commands.pool, None);
-            for (_, shader_module) in self.shader_modules.drain() {
-                self.base.device.destroy_shader_module(shader_module, None);
-            }
+            self.base
+                .device
+                .destroy_shader_module(self.vert_module.unwrap(), None);
+            self.base
+                .device
+                .destroy_shader_module(self.frag_module.unwrap(), None);
         }
     }
 }
@@ -1317,16 +1310,6 @@ impl<'a> PipelineDescriptor<'a> {
                 .dynamic_states(&self.dynamic_state),
         }
     }
-}
-
-pub struct VertexShaderEntryPoint {
-    pub module: String,
-    pub entry_point: String,
-}
-
-pub struct FragmentShaderEntryPoint {
-    module: String,
-    entry_point: String,
 }
 
 unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {

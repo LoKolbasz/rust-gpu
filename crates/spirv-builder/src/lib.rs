@@ -91,6 +91,9 @@ use thiserror::Error;
 pub use rustc_codegen_spirv_types::Capability;
 pub use rustc_codegen_spirv_types::{CompileResult, EntryPoint, ModuleResult};
 
+#[cfg(feature = "watch")]
+pub use self::watch::Watch;
+
 #[cfg(feature = "include-target-specs")]
 pub use rustc_codegen_spirv_target_specs::TARGET_SPEC_DIR_PATH;
 
@@ -1059,7 +1062,7 @@ fn invoke_rustc(builder: &SpirvBuilder) -> Result<PathBuf, SpirvBuilderError> {
     );
 
     cargo.stderr(Stdio::inherit()).current_dir(path_to_crate);
-    log::debug!("building shaders with `{cargo}`");
+    log::debug!("building shaders with `{cargo:?}`");
     let build = cargo.output().expect("failed to execute cargo build");
 
     // `get_last_artifact` has the side-effect of printing invalid lines, so

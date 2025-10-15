@@ -1,8 +1,8 @@
 //! Traits and helper functions related to floats.
 
-use crate::vector::Vector;
 #[cfg(target_arch = "spirv")]
 use core::arch::asm;
+use glam::{Vec2, Vec4};
 
 /// Abstract trait representing a SPIR-V floating point type.
 ///
@@ -25,7 +25,7 @@ unsafe impl Float for f64 {
 /// Converts two f32 values (floats) into two f16 values (halfs). The result is a u32, with the low
 /// 16 bits being the first f16, and the high 16 bits being the second f16.
 #[spirv_std_macros::gpu_only]
-pub fn vec2_to_f16x2(vec: impl Vector<f32, 2>) -> u32 {
+pub fn vec2_to_f16x2(vec: Vec2) -> u32 {
     let result;
     unsafe {
         asm!(
@@ -44,15 +44,13 @@ pub fn vec2_to_f16x2(vec: impl Vector<f32, 2>) -> u32 {
 /// Converts two f16 values (halfs) into two f32 values (floats). The parameter is a u32, with the
 /// low 16 bits being the first f16, and the high 16 bits being the second f16.
 #[spirv_std_macros::gpu_only]
-pub fn f16x2_to_vec2<V: Vector<f32, 2>>(int: u32) -> V {
+pub fn f16x2_to_vec2(int: u32) -> Vec2 {
     let mut result = Default::default();
     unsafe {
         asm!(
             "%glsl = OpExtInstImport \"GLSL.std.450\"",
-            "%float = OpTypeFloat 32",
-            "%vec2 = OpTypeVector %float 2",
             // 62 = UnpackHalf2x16
-            "%result = OpExtInst %vec2 %glsl 62 {int}",
+            "%result = OpExtInst typeof*{result} %glsl 62 {int}",
             "OpStore {result} %result",
             int = in(reg) int,
             result = in(reg) &mut result,
@@ -72,14 +70,14 @@ pub fn f32_to_f16(float: f32) -> u32 {
 /// not being universal - the upper 16 bits are ignored.
 #[spirv_std_macros::gpu_only]
 pub fn f16_to_f32(packed: u32) -> f32 {
-    f16x2_to_vec2::<glam::Vec2>(packed).x
+    f16x2_to_vec2(packed).x
 }
 
 /// Packs a vec4 into 4 8-bit signed integers. See
 /// [PackSnorm4x8](https://www.khronos.org/registry/SPIR-V/specs/1.0/GLSL.std.450.html) for exact
 /// semantics.
 #[spirv_std_macros::gpu_only]
-pub fn vec4_to_u8x4_snorm(vec: impl Vector<f32, 4>) -> u32 {
+pub fn vec4_to_u8x4_snorm(vec: Vec4) -> u32 {
     let result;
     unsafe {
         asm!(
@@ -99,7 +97,7 @@ pub fn vec4_to_u8x4_snorm(vec: impl Vector<f32, 4>) -> u32 {
 /// [PackUnorm4x8](https://www.khronos.org/registry/SPIR-V/specs/1.0/GLSL.std.450.html) for exact
 /// semantics.
 #[spirv_std_macros::gpu_only]
-pub fn vec4_to_u8x4_unorm(vec: impl Vector<f32, 4>) -> u32 {
+pub fn vec4_to_u8x4_unorm(vec: Vec4) -> u32 {
     let result;
     unsafe {
         asm!(
@@ -119,7 +117,7 @@ pub fn vec4_to_u8x4_unorm(vec: impl Vector<f32, 4>) -> u32 {
 /// [PackSnorm2x16](https://www.khronos.org/registry/SPIR-V/specs/1.0/GLSL.std.450.html) for exact
 /// semantics.
 #[spirv_std_macros::gpu_only]
-pub fn vec2_to_u16x2_snorm(vec: impl Vector<f32, 2>) -> u32 {
+pub fn vec2_to_u16x2_snorm(vec: Vec2) -> u32 {
     let result;
     unsafe {
         asm!(
@@ -139,7 +137,7 @@ pub fn vec2_to_u16x2_snorm(vec: impl Vector<f32, 2>) -> u32 {
 /// [PackUnorm2x16](https://www.khronos.org/registry/SPIR-V/specs/1.0/GLSL.std.450.html) for exact
 /// semantics.
 #[spirv_std_macros::gpu_only]
-pub fn vec2_to_u16x2_unorm(vec: impl Vector<f32, 2>) -> u32 {
+pub fn vec2_to_u16x2_unorm(vec: Vec2) -> u32 {
     let result;
     unsafe {
         asm!(
@@ -159,15 +157,13 @@ pub fn vec2_to_u16x2_unorm(vec: impl Vector<f32, 2>) -> u32 {
 /// [UnpackSnorm4x8](https://www.khronos.org/registry/SPIR-V/specs/1.0/GLSL.std.450.html) for exact
 /// semantics.
 #[spirv_std_macros::gpu_only]
-pub fn u8x4_to_vec4_snorm<V: Vector<f32, 4>>(int: u32) -> V {
+pub fn u8x4_to_vec4_snorm(int: u32) -> Vec4 {
     let mut result = Default::default();
     unsafe {
         asm!(
             "%glsl = OpExtInstImport \"GLSL.std.450\"",
-            "%float = OpTypeFloat 32",
-            "%vec4 = OpTypeVector %float 4",
             // 63 = UnpackSnorm4x8
-            "%result = OpExtInst %vec4 %glsl 63 {int}",
+            "%result = OpExtInst typeof*{result} %glsl 63 {int}",
             "OpStore {result} %result",
             int = in(reg) int,
             result = in(reg) &mut result,
@@ -180,15 +176,13 @@ pub fn u8x4_to_vec4_snorm<V: Vector<f32, 4>>(int: u32) -> V {
 /// [UnpackSnorm4x8](https://www.khronos.org/registry/SPIR-V/specs/1.0/GLSL.std.450.html) for exact
 /// semantics.
 #[spirv_std_macros::gpu_only]
-pub fn u8x4_to_vec4_unorm<V: Vector<f32, 4>>(int: u32) -> V {
+pub fn u8x4_to_vec4_unorm(int: u32) -> Vec4 {
     let mut result = Default::default();
     unsafe {
         asm!(
             "%glsl = OpExtInstImport \"GLSL.std.450\"",
-            "%float = OpTypeFloat 32",
-            "%vec4 = OpTypeVector %float 4",
             // 64 = UnpackUnorm4x8
-            "%result = OpExtInst %vec4 %glsl 64 {int}",
+            "%result = OpExtInst typeof*{result} %glsl 64 {int}",
             "OpStore {result} %result",
             int = in(reg) int,
             result = in(reg) &mut result,
@@ -201,15 +195,13 @@ pub fn u8x4_to_vec4_unorm<V: Vector<f32, 4>>(int: u32) -> V {
 /// [UnpackSnorm2x16](https://www.khronos.org/registry/SPIR-V/specs/1.0/GLSL.std.450.html) for
 /// exact semantics.
 #[spirv_std_macros::gpu_only]
-pub fn u16x2_to_vec2_snorm<V: Vector<f32, 2>>(int: u32) -> V {
+pub fn u16x2_to_vec2_snorm(int: u32) -> Vec2 {
     let mut result = Default::default();
     unsafe {
         asm!(
             "%glsl = OpExtInstImport \"GLSL.std.450\"",
-            "%float = OpTypeFloat 32",
-            "%vec2 = OpTypeVector %float 2",
             // 60 = UnpackSnorm2x16
-            "%result = OpExtInst %vec2 %glsl 60 {int}",
+            "%result = OpExtInst typeof*{result} %glsl 60 {int}",
             "OpStore {result} %result",
             int = in(reg) int,
             result = in(reg) &mut result,
@@ -222,15 +214,13 @@ pub fn u16x2_to_vec2_snorm<V: Vector<f32, 2>>(int: u32) -> V {
 /// [UnpackUnorm2x16](https://www.khronos.org/registry/SPIR-V/specs/1.0/GLSL.std.450.html) for
 /// exact semantics.
 #[spirv_std_macros::gpu_only]
-pub fn u16x2_to_vec2_unorm<V: Vector<f32, 2>>(int: u32) -> V {
+pub fn u16x2_to_vec2_unorm(int: u32) -> Vec2 {
     let mut result = Default::default();
     unsafe {
         asm!(
             "%glsl = OpExtInstImport \"GLSL.std.450\"",
-            "%float = OpTypeFloat 32",
-            "%vec2 = OpTypeVector %float 2",
             // 61 = UnpackUnorm2x16
-            "%result = OpExtInst %vec2 %glsl 61 {int}",
+            "%result = OpExtInst typeof*{result} %glsl 61 {int}",
             "OpStore {result} %result",
             int = in(reg) int,
             result = in(reg) &mut result,

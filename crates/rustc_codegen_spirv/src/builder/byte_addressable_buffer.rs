@@ -9,8 +9,9 @@ use rustc_abi::{Align, Size};
 use rustc_codegen_spirv_types::Capability;
 use rustc_codegen_ssa::traits::BuilderMethods;
 use rustc_errors::ErrorGuaranteed;
+use rustc_middle::ty::Ty;
 use rustc_span::DUMMY_SP;
-use rustc_target::callconv::PassMode;
+use rustc_target::callconv::{FnAbi, PassMode};
 
 impl<'a, 'tcx> Builder<'a, 'tcx> {
     fn load_err(&mut self, original_type: Word, invalid_type: Word) -> SpirvValue {
@@ -74,7 +75,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             Some(size) => size,
             None => return self.load_err(original_type, result_type),
         };
-        if element_size_bytes.bytes() % 4 != 0 {
+        if !element_size_bytes.bytes().is_multiple_of(4) {
             return self.load_err(original_type, result_type);
         }
         let element_size_words = (element_size_bytes.bytes() / 4) as u32;
@@ -148,7 +149,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     .iter()
                     .zip(field_offsets)
                     .map(|(&field_type, byte_offset)| {
-                        if byte_offset.bytes() % 4 != 0 {
+                        if !byte_offset.bytes().is_multiple_of(4) {
                             return None;
                         }
                         let word_offset = (byte_offset.bytes() / 4) as u32;
@@ -181,10 +182,11 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Note: DOES NOT do bounds checking! Bounds checking is expected to be done in the caller.
     pub fn codegen_buffer_load_intrinsic(
         &mut self,
+        fn_abi: Option<&FnAbi<'tcx, Ty<'tcx>>>,
         result_type: Word,
         args: &[SpirvValue],
-        pass_mode: &PassMode,
     ) -> SpirvValue {
+        let pass_mode = &fn_abi.unwrap().ret.mode;
         match pass_mode {
             PassMode::Ignore => {
                 return SpirvValue {
@@ -276,7 +278,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             Some(size) => size,
             None => return self.store_err(original_type, value),
         };
-        if element_size_bytes.bytes() % 4 != 0 {
+        if !element_size_bytes.bytes().is_multiple_of(4) {
             return self.store_err(original_type, value);
         }
         let element_size_words = (element_size_bytes.bytes() / 4) as u32;
@@ -343,7 +345,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 ..
             } => {
                 for (index, byte_offset) in field_offsets.iter().enumerate() {
-                    if byte_offset.bytes() % 4 != 0 {
+                    if !byte_offset.bytes().is_multiple_of(4) {
                         return self.store_err(original_type, value);
                     }
                     let word_offset = (byte_offset.bytes() / 4) as u32;
@@ -364,8 +366,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     }
 
     /// Note: DOES NOT do bounds checking! Bounds checking is expected to be done in the caller.
-    pub fn codegen_buffer_store_intrinsic(&mut self, args: &[SpirvValue], pass_mode: &PassMode) {
+    pub fn codegen_buffer_store_intrinsic(
+        &mut self,
+        fn_abi: Option<&FnAbi<'tcx, Ty<'tcx>>>,
+        args: &[SpirvValue],
+    ) {
         // Signature: fn store<T>(array: &[u32], index: u32, value: T);
+        let pass_mode = &fn_abi.unwrap().args.last().unwrap().mode;
         let is_pair = match pass_mode {
             // haha shrug
             PassMode::Ignore => return,
